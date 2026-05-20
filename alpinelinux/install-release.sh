@@ -120,8 +120,10 @@ install_dependencies() {
 
     if [ -n "$NEED_PACKAGES" ]; then
         if [ "$(command -v apk)" ]; then
+            # shellcheck disable=SC2086
+            set -- $NEED_PACKAGES
             echo "Installing required dependencies:$NEED_PACKAGES..."
-            pkg_manager add "$NEED_PACKAGES"
+            pkg_manager add "$@"
         else
             echo "error: The script does not support the package manager in this operating system."
             exit 1
@@ -194,16 +196,28 @@ install_confdir() {
 }
 
 install_log() {
+    local log_user="nobody"
+    local log_group="nobody"
+    if ! getent group "$log_group" >/dev/null 2>&1; then
+        if getent group "nogroup" >/dev/null 2>&1; then
+            log_group="nogroup"
+        else
+            # Fallback for minimal systems lacking both groups
+            log_user="root"
+            log_group="root"
+        fi
+    fi
+
     LOG='0'
     if [ ! -d '/var/log/xray/' ]; then
         install -d -m 755 -o 0 -g 0 /var/log/xray/
-        install -m 600 -o nobody -g nobody /dev/null /var/log/xray/access.log
-        install -m 600 -o nobody -g nobody /dev/null /var/log/xray/error.log
+        install -m 600 -o "$log_user" -g "$log_group" /dev/null /var/log/xray/access.log
+        install -m 600 -o "$log_user" -g "$log_group" /dev/null /var/log/xray/error.log
         LOG='1'
     else
         chown 0:0 /var/log/xray/
         chmod 755 /var/log/xray/
-        chown nobody:nobody /var/log/xray/*.log
+        chown "$log_user:$log_group" /var/log/xray/*.log
         chmod 600 /var/log/xray/*.log
     fi
 }
@@ -245,7 +259,7 @@ information() {
     fi
     rm -r "$TMP_DIRECTORY"
     echo "removed: $TMP_DIRECTORY"
-    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl unzip"
+    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl libarchive-tools"
     if [ "$XRAY_RUNNING" -eq '1' ]; then
         rc-service xray start
     else

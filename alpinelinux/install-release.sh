@@ -156,40 +156,56 @@ verification_xray() {
 decompression() {
     echo "Decompressing required files in low-memory mode..."
 
-    # Extract payload files one-by-one to minimize peak memory.
-    # Prefer busybox unzip on minimal/containerized Alpine.
-    if command -v busybox >/dev/null 2>&1; then
-        if busybox unzip -o "$ZIP_FILE" xray -d "$TMP_DIRECTORY" &&
-            busybox unzip -o "$ZIP_FILE" geoip.dat -d "$TMP_DIRECTORY" &&
-            busybox unzip -o "$ZIP_FILE" geosite.dat -d "$TMP_DIRECTORY"; then
-            sleep 2
-            return 0
+    # Stream extract a single file to reduce memory pressure.
+    stream_extract_file() {
+        local zip_path="$1"
+        local member="$2"
+        local out_path="$3"
+        local tmp_out="${out_path}.tmp"
+
+        rm -f "$tmp_out"
+
+        if command -v busybox >/dev/null 2>&1; then
+            if busybox unzip -p "$zip_path" "$member" > "$tmp_out"; then
+                mv -f "$tmp_out" "$out_path"
+                return 0
+            fi
+        fi
+
+        if command -v unzip >/dev/null 2>&1; then
+            if unzip -p "$zip_path" "$member" > "$tmp_out"; then
+                mv -f "$tmp_out" "$out_path"
+                return 0
+            fi
+        fi
+
+        rm -f "$tmp_out"
+        return 1
+    }
+
+    if ! stream_extract_file "$ZIP_FILE" "xray" "${TMP_DIRECTORY}xray"; then
+        echo "error: Failed to extract xray binary from archive."
+        exit 1
+    fi
+
+    if ! stream_extract_file "$ZIP_FILE" "geoip.dat" "${TMP_DIRECTORY}geoip.dat"; then
+        echo "error: Failed to extract geoip.dat from archive."
+        exit 1
+    fi
+
+    if ! stream_extract_file "$ZIP_FILE" "geosite.dat" "${TMP_DIRECTORY}geosite.dat"; then
+        # On very low-memory pods, geosite extraction can be OOM-killed.
+        # Reuse existing geosite.dat if present so installation can proceed.
+        if [ -s "/usr/local/share/xray/geosite.dat" ]; then
+            echo "warn: geosite.dat extraction failed, reusing existing /usr/local/share/xray/geosite.dat"
+            cp "/usr/local/share/xray/geosite.dat" "${TMP_DIRECTORY}geosite.dat"
+        else
+            echo "error: Failed to extract geosite.dat and no existing local fallback found."
+            exit 1
         fi
     fi
 
-    # Fallback to unzip if available.
-    if command -v unzip >/dev/null 2>&1; then
-        if unzip -o "$ZIP_FILE" xray -d "$TMP_DIRECTORY" &&
-            unzip -o "$ZIP_FILE" geoip.dat -d "$TMP_DIRECTORY" &&
-            unzip -o "$ZIP_FILE" geosite.dat -d "$TMP_DIRECTORY"; then
-            sleep 2
-            return 0
-        fi
-    fi
-
-    # Final fallback: bsdtar one-by-one if present.
-    if command -v bsdtar >/dev/null 2>&1; then
-        if bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" xray &&
-            bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" geoip.dat &&
-            bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" geosite.dat; then
-            sleep 2
-            return 0
-        fi
-    fi
-
-    echo "error: Failed to extract xray payload. On low-memory containerized Alpine, bsdtar may be OOM-killed."
-    echo "error: Please ensure busybox unzip or unzip is available, then retry."
-    exit 1
+    sleep 2
 }
 
 has_extracted_payload() {

@@ -51,53 +51,14 @@ identify_architecture() {
         return 1
     fi
     case "$(uname -m)" in
-    'i386' | 'i686')
-        MACHINE='32'
-        ;;
     'amd64' | 'x86_64')
-        MACHINE='64'
-        ;;
-    'armv5tel')
-        MACHINE='arm32-v5'
-        ;;
-    'armv6l')
-        MACHINE='arm32-v6'
-        grep Features /proc/cpuinfo | grep -qw 'vfp' || MACHINE='arm32-v5'
-        ;;
-    'armv7' | 'armv7l')
-        MACHINE='arm32-v7a'
-        grep Features /proc/cpuinfo | grep -qw 'vfp' || MACHINE='arm32-v5'
+        BINARY_DIR='binary_amd64'
         ;;
     'armv8' | 'aarch64')
-        MACHINE='arm64-v8a'
-        ;;
-    'mips')
-        MACHINE='mips32'
-        ;;
-    'mipsle')
-        MACHINE='mips32le'
-        ;;
-    'mips64')
-        MACHINE='mips64'
-        lscpu | grep -q "Little Endian" && MACHINE='mips64le'
-        ;;
-    'mips64le')
-        MACHINE='mips64le'
-        ;;
-    'ppc64')
-        MACHINE='ppc64'
-        ;;
-    'ppc64le')
-        MACHINE='ppc64le'
-        ;;
-    'riscv64')
-        MACHINE='riscv64'
-        ;;
-    's390x')
-        MACHINE='s390x'
+        BINARY_DIR='binary_arm64'
         ;;
     *)
-        echo "error: The architecture is not supported."
+        echo "error: The architecture is not supported. Only x86_64 and aarch64 are supported."
         return 1
         ;;
     esac
@@ -114,10 +75,6 @@ install_dependencies() {
         NEED_PACKAGES="$NEED_PACKAGES curl"
     fi
 
-    if [ -z "$(command -v unzip)" ] && [ -z "$(command -v busybox)" ]; then
-        NEED_PACKAGES="$NEED_PACKAGES unzip"
-    fi
-
     if [ -n "$NEED_PACKAGES" ]; then
         if [ "$(command -v apk)" ]; then
             # shellcheck disable=SC2086
@@ -131,100 +88,31 @@ install_dependencies() {
     fi
 }
 
-download_xray() {
-    echo "Downloading Xray files..."
-    if ! curl -f -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE" "$DOWNLOAD_LINK" -#; then
-        echo 'error: Download failed! Please check your network or try again.'
-        exit 1
-    fi
-
-    if ! curl -f -L -H 'Cache-Control: no-cache' -o "$ZIP_FILE.dgst" "$DOWNLOAD_LINK.dgst" -#; then
-        echo 'error: Download failed! Please check your network or try again.'
-        exit 1
-    fi
-}
-
-verification_xray() {
-    CHECKSUM=$(awk -F '= ' '/256=/ {print $2}' "$ZIP_FILE.dgst")
-    LOCALSUM=$(sha256sum "$ZIP_FILE" | awk '{printf $1}')
-    if [ "$CHECKSUM" != "$LOCALSUM" ]; then
-        echo 'error: SHA256 check failed! Please check your network or try again.'
-        return 1
-    fi
-}
-
-decompression() {
-    echo "Decompressing required files in low-memory mode..."
-
-    # Stream extract a single file to reduce memory pressure.
-    stream_extract_file() {
-        local zip_path="$1"
-        local member="$2"
-        local out_path="$3"
-        local tmp_out="${out_path}.tmp"
-
-        rm -f "$tmp_out"
-
-        if command -v busybox >/dev/null 2>&1; then
-            if busybox unzip -p "$zip_path" "$member" > "$tmp_out"; then
-                mv -f "$tmp_out" "$out_path"
-                return 0
-            fi
-        fi
-
-        if command -v unzip >/dev/null 2>&1; then
-            if unzip -p "$zip_path" "$member" > "$tmp_out"; then
-                mv -f "$tmp_out" "$out_path"
-                return 0
-            fi
-        fi
-
-        rm -f "$tmp_out"
-        return 1
-    }
-
-    if ! stream_extract_file "$ZIP_FILE" "xray" "${TMP_DIRECTORY}xray"; then
-        echo "error: Failed to extract xray binary from archive."
-        exit 1
-    fi
-
-    if ! stream_extract_file "$ZIP_FILE" "geoip.dat" "${TMP_DIRECTORY}geoip.dat"; then
-        echo "error: Failed to extract geoip.dat from archive."
-        exit 1
-    fi
-
-    if ! stream_extract_file "$ZIP_FILE" "geosite.dat" "${TMP_DIRECTORY}geosite.dat"; then
-        # On very low-memory pods, geosite extraction can be OOM-killed.
-        # Reuse existing geosite.dat if present so installation can proceed.
-        if [ -s "/usr/local/share/xray/geosite.dat" ]; then
-            echo "warn: geosite.dat extraction failed, reusing existing /usr/local/share/xray/geosite.dat"
-            cp "/usr/local/share/xray/geosite.dat" "${TMP_DIRECTORY}geosite.dat"
-        else
-            echo "error: Failed to extract geosite.dat and no existing local fallback found."
-            exit 1
-        fi
-    fi
-
-    sleep 2
-}
-
-has_extracted_payload() {
+has_downloaded_payload() {
     [ -s "${TMP_DIRECTORY}xray" ] && [ -s "${TMP_DIRECTORY}geoip.dat" ] && [ -s "${TMP_DIRECTORY}geosite.dat" ]
 }
 
 prepare_xray_payload() {
-    if has_extracted_payload; then
-        echo "Using cached extracted payload, skipping download and decompression."
+    if has_downloaded_payload; then
+        echo "Using cached payload files, skipping download."
         return 0
     fi
 
-    if [ -s "$ZIP_FILE" ] && [ -s "$ZIP_FILE.dgst" ]; then
-        echo "Using cached ZIP package, skipping download."
-    else
-        download_xray
-    fi
+    echo "Downloading Xray files from repo path: ${BINARY_DIR}"
+    local base_url="https://raw.githubusercontent.com/livingfree2023/Xray-install/refs/heads/main/${BINARY_DIR}"
 
-    decompression
+    if ! curl -f -L -H 'Cache-Control: no-cache' -o "${TMP_DIRECTORY}xray" "${base_url}/xray" -#; then
+        echo 'error: Failed to download xray binary.'
+        exit 1
+    fi
+    if ! curl -f -L -H 'Cache-Control: no-cache' -o "${TMP_DIRECTORY}geoip.dat" "${base_url}/geoip.dat" -#; then
+        echo 'error: Failed to download geoip.dat.'
+        exit 1
+    fi
+    if ! curl -f -L -H 'Cache-Control: no-cache' -o "${TMP_DIRECTORY}geosite.dat" "${base_url}/geosite.dat" -#; then
+        echo 'error: Failed to download geosite.dat.'
+        exit 1
+    fi
 }
 
 is_it_running() {
@@ -324,7 +212,7 @@ information() {
     fi
     rm -r "$TMP_DIRECTORY"
     echo "removed: $TMP_DIRECTORY"
-    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl unzip"
+    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl"
     if [ "$XRAY_RUNNING" -eq '1' ]; then
         rc-service xray start
     else
@@ -342,13 +230,7 @@ main() {
     TMP_DIRECTORY="${HOME}/xray_tmp/"
     mkdir -p "$TMP_DIRECTORY"
     
-    ZIP_FILE="${TMP_DIRECTORY}Xray-linux-$MACHINE.zip"
-    DOWNLOAD_LINK="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-$MACHINE.zip"
-
-    
     prepare_xray_payload
-    # skip due to RAM limit
-    # verification_xray
     is_it_running
     install_xray
     install_confdir

@@ -114,8 +114,8 @@ install_dependencies() {
         NEED_PACKAGES="$NEED_PACKAGES curl"
     fi
 
-    if [ -z "$(command -v bsdtar)" ]; then
-        NEED_PACKAGES="$NEED_PACKAGES libarchive-tools"
+    if [ -z "$(command -v unzip)" ] && [ -z "$(command -v busybox)" ]; then
+        NEED_PACKAGES="$NEED_PACKAGES unzip"
     fi
 
     if [ -n "$NEED_PACKAGES" ]; then
@@ -154,12 +154,61 @@ verification_xray() {
 }
 
 decompression() {
-    echo "Decompressing archive using busybox..."
+    echo "Decompressing required files in low-memory mode..."
 
-    bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY"
+    # Extract payload files one-by-one to minimize peak memory.
+    # Prefer busybox unzip on minimal/containerized Alpine.
+    if command -v busybox >/dev/null 2>&1; then
+        if busybox unzip -o "$ZIP_FILE" xray -d "$TMP_DIRECTORY" &&
+            busybox unzip -o "$ZIP_FILE" geoip.dat -d "$TMP_DIRECTORY" &&
+            busybox unzip -o "$ZIP_FILE" geosite.dat -d "$TMP_DIRECTORY"; then
+            sleep 2
+            return 0
+        fi
+    fi
 
-    # Give the container kernel 2 seconds to free unzipping memory allocations
-    sleep 2
+    # Fallback to unzip if available.
+    if command -v unzip >/dev/null 2>&1; then
+        if unzip -o "$ZIP_FILE" xray -d "$TMP_DIRECTORY" &&
+            unzip -o "$ZIP_FILE" geoip.dat -d "$TMP_DIRECTORY" &&
+            unzip -o "$ZIP_FILE" geosite.dat -d "$TMP_DIRECTORY"; then
+            sleep 2
+            return 0
+        fi
+    fi
+
+    # Final fallback: bsdtar one-by-one if present.
+    if command -v bsdtar >/dev/null 2>&1; then
+        if bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" xray &&
+            bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" geoip.dat &&
+            bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY" geosite.dat; then
+            sleep 2
+            return 0
+        fi
+    fi
+
+    echo "error: Failed to extract xray payload. On low-memory containerized Alpine, bsdtar may be OOM-killed."
+    echo "error: Please ensure busybox unzip or unzip is available, then retry."
+    exit 1
+}
+
+has_extracted_payload() {
+    [ -s "${TMP_DIRECTORY}xray" ] && [ -s "${TMP_DIRECTORY}geoip.dat" ] && [ -s "${TMP_DIRECTORY}geosite.dat" ]
+}
+
+prepare_xray_payload() {
+    if has_extracted_payload; then
+        echo "Using cached extracted payload, skipping download and decompression."
+        return 0
+    fi
+
+    if [ -s "$ZIP_FILE" ] && [ -s "$ZIP_FILE.dgst" ]; then
+        echo "Using cached ZIP package, skipping download."
+    else
+        download_xray
+    fi
+
+    decompression
 }
 
 is_it_running() {
@@ -259,7 +308,7 @@ information() {
     fi
     rm -r "$TMP_DIRECTORY"
     echo "removed: $TMP_DIRECTORY"
-    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl libarchive-tools"
+    echo "You may need to execute a command to remove dependent software: $(pkg_manager del) curl unzip"
     if [ "$XRAY_RUNNING" -eq '1' ]; then
         rc-service xray start
     else
@@ -281,10 +330,9 @@ main() {
     DOWNLOAD_LINK="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-$MACHINE.zip"
 
     
-    download_xray
+    prepare_xray_payload
     # skip due to RAM limit
     # verification_xray
-    decompression
     is_it_running
     install_xray
     install_confdir

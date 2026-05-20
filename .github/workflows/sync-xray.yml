@@ -20,22 +20,21 @@ jobs:
 
       - name: Download and Extract AMD64 (x86_64) Binary
         run: |
-          wget -qO- https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip | \
-          bsdtar -xf- -C binaries/ xray
-          mv binaries/xray binaries/xray-linux-64
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+          unzip Xray-linux-64.zip -d binary_amd64
+          
 
       - name: Download and Extract ARM64 (aarch64) Binary
         run: |
-          wget -qO- https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip | \
-          bsdtar -xf- -C binaries/ xray
-          mv binaries/xray binaries/xray-linux-arm64
+          wget -q https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip 
+          unzip Xray-linux-arm64-v8a.zip -d binary_arm64
 
       - name: Commit and Push Changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          git add binaries/
+          git add -A
           
           # Only commit and push if there are changes to avoid failing the workflow
           if git diff --cached --quiet; then

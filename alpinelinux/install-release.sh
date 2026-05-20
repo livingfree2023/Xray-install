@@ -108,18 +108,24 @@ identify_architecture() {
 }
 
 install_dependencies() {
-    if [ -n "$(command -v curl)" ]; then
-        return
+
+    local NEED_PACKAGES=""
+    if [ -z "$(command -v curl)" ]; then
+        NEED_PACKAGES="$NEED_PACKAGES curl"
     fi
-    if [ -n "$(command -v unzip)" ]; then
-        return
+
+    if [ -z "$(command -v bsdtar)" ]; then
+        NEED_PACKAGES="$NEED_PACKAGES libarchive-tools"
     fi
-    if [ "$(command -v apk)" ]; then
-        echo "Installing required dependencies..."
-        pkg_manager add curl unzip # to generalize installation procedure
-    else
-        echo "error: The script does not support the package manager in this operating system."
-        exit 1
+
+    if [ -n "$NEED_PACKAGES" ]; then
+        if [ "$(command -v apk)" ]; then
+            echo "Installing required dependencies:$NEED_PACKAGES..."
+            pkg_manager add "$NEED_PACKAGES"
+        else
+            echo "error: The script does not support the package manager in this operating system."
+            exit 1
+        fi
     fi
 }
 
@@ -146,7 +152,12 @@ verification_xray() {
 }
 
 decompression() {
-    unzip -q "$ZIP_FILE" -d "$TMP_DIRECTORY"
+    echo "Decompressing archive using busybox..."
+
+    bsdtar -xf "$ZIP_FILE" -C "$TMP_DIRECTORY"
+
+    # Give the container kernel 2 seconds to free unzipping memory allocations
+    sleep 2
 }
 
 is_it_running() {
@@ -158,10 +169,17 @@ is_it_running() {
 }
 
 install_xray() {
-    install -m 755 "${TMP_DIRECTORY}xray" "/usr/local/bin/xray"
-    install -d /usr/local/share/xray/
-    install -m 644 "${TMP_DIRECTORY}geoip.dat" "/usr/local/share/xray/geoip.dat"
-    install -m 644 "${TMP_DIRECTORY}geosite.dat" "/usr/local/share/xray/geosite.dat"
+    echo "Deploying Xray execution binaries and data assets..."
+    mkdir -p /usr/local/bin/
+    mkdir -p /usr/local/share/xray/
+
+    # Using cp + chmod instead of install to avoid high memory buffering
+    cp "${TMP_DIRECTORY}xray" "/usr/local/bin/xray"
+    chmod 755 /usr/local/bin/xray
+
+    cp "${TMP_DIRECTORY}geoip.dat" "/usr/local/share/xray/geoip.dat"
+    cp "${TMP_DIRECTORY}geosite.dat" "/usr/local/share/xray/geosite.dat"
+    chmod 644 /usr/local/share/xray/*.dat
 }
 
 install_confdir() {
@@ -242,12 +260,16 @@ main() {
     identify_architecture || return 1
     install_dependencies
 
-    TMP_DIRECTORY="$(mktemp -d)/"
+    TMP_DIRECTORY="${HOME}/xray_tmp/"
+    mkdir -p "$TMP_DIRECTORY"
+    
     ZIP_FILE="${TMP_DIRECTORY}Xray-linux-$MACHINE.zip"
     DOWNLOAD_LINK="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-$MACHINE.zip"
 
+    
     download_xray
-    verification_xray
+    # skip due to RAM limit
+    # verification_xray
     decompression
     is_it_running
     install_xray

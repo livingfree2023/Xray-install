@@ -2,7 +2,7 @@ name: Sync Latest Xray Binaries
 
 on:
   schedule:
-    - cron: '0 0 1 * *' # Runs every day at midnight UTC
+    - cron: '0 9 * * 1' 
   workflow_dispatch: # Allows you to manually trigger the workflow from the Actions tab
 
 permissions:
